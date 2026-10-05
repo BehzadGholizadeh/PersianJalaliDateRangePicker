@@ -1,0 +1,533 @@
+diff --git a/capabilities.json b/capabilities.json
+index 70599e9..2267a4a 100644
+--- a/capabilities.json
++++ b/capabilities.json
+@@ -74,7 +74,8 @@
+                 "showClear": { "type": { "bool": true } },
+                 "showToday": { "type": { "bool": true } },
+                 "showCancel": { "type": { "bool": true } },
+-                "autoApply": { "type": { "bool": true } }
++                "autoApply": { "type": { "bool": true } },
++                "focusModeWhenSmall": { "type": { "bool": true } }
+             }
+         },
+         "localization": {
+diff --git a/package.json b/package.json
+index f49e1c9..1972bd0 100644
+--- a/package.json
++++ b/package.json
+@@ -1,6 +1,6 @@
+ {
+   "name": "persian-jalali-date-range-picker",
+-  "version": "1.0.0",
++  "version": "1.1.0",
+   "description": "Persian (Jalali) date range picker custom visual for Power BI Report Server + SSAS Live Connection",
+   "private": true,
+   "license": "UNLICENSED",
+@@ -9,7 +9,8 @@
+     "start": "pbiviz start",
+     "lint": "pbiviz lint",
+     "test": "tsc -p tsconfig.test.json && node --test \"build-tests/tests/*.test.js\"",
+-    "package": "pbiviz package && node scripts/copy-package.js"
++    "package": "pbiviz package && node scripts/copy-package.js",
++    "build": "pbiviz package && node scripts/copy-package.js"
+   },
+   "dependencies": {
+     "powerbi-models": "1.15.2",
+diff --git a/pbiviz.json b/pbiviz.json
+index d0e7e86..584db8a 100644
+--- a/pbiviz.json
++++ b/pbiviz.json
+@@ -4,7 +4,7 @@
+         "displayName": "Persian Jalali Date Range Picker",
+         "guid": "PersianJalaliDateRangePickerA7C31F0E9B2D4",
+         "visualClassName": "Visual",
+-        "version": "1.0.0.0",
++        "version": "1.1.0.0",
+         "description": "Persian (Jalali/Shamsi) RTL date range picker that filters Dates_Dim[MDate]. Built for Power BI Report Server + SSAS Tabular Live Connection. No network access.",
+         "supportUrl": "https://example.invalid/support",
+         "gitHubUrl": ""
+@@ -22,5 +22,5 @@
+     "capabilities": "capabilities.json",
+     "dependencies": null,
+     "stringResources": [],
+-    "version": "1.0.0.0"
++    "version": "1.1.0.0"
+ }
+diff --git a/src/formatting.ts b/src/formatting.ts
+index 9958c68..738c5ae 100644
+--- a/src/formatting.ts
++++ b/src/formatting.ts
+@@ -16,7 +16,7 @@ export interface VisualSettings {
+     header: { show: boolean; text: string; fontSize: number };
+     dateDisplay: { showStart: boolean; showEnd: boolean; fontSize: number; separator: string };
+     calendar: { fontSize: number; cellSize: number; monthHeaderSize: number; weekdayHeaderSize: number };
+-    buttons: { showApply: boolean; showClear: boolean; showToday: boolean; showCancel: boolean; autoApply: boolean };
++    buttons: { showApply: boolean; showClear: boolean; showToday: boolean; showCancel: boolean; autoApply: boolean; focusModeWhenSmall: boolean };
+     localization: { language: UiLanguage };
+     advanced: { filterDateEncoding: FilterDateEncoding };
+ }
+@@ -27,7 +27,7 @@ export function defaultSettings(): VisualSettings {
+         header: { show: true, text: "", fontSize: 14 },
+         dateDisplay: { showStart: true, showEnd: true, fontSize: 14, separator: "/" },
+         calendar: { fontSize: 13, cellSize: 34, monthHeaderSize: 14, weekdayHeaderSize: 11 },
+-        buttons: { showApply: true, showClear: true, showToday: true, showCancel: true, autoApply: false },
++        buttons: { showApply: true, showClear: true, showToday: true, showCancel: true, autoApply: false, focusModeWhenSmall: true },
+         localization: { language: "fa" },
+         advanced: { filterDateEncoding: "local" }
+     };
+@@ -102,7 +102,8 @@ export function readSettings(objects: DataViewObjects | undefined): VisualSettin
+             showClear: readBool(objects, "buttons", "showClear", d.buttons.showClear),
+             showToday: readBool(objects, "buttons", "showToday", d.buttons.showToday),
+             showCancel: readBool(objects, "buttons", "showCancel", d.buttons.showCancel),
+-            autoApply: readBool(objects, "buttons", "autoApply", d.buttons.autoApply)
++            autoApply: readBool(objects, "buttons", "autoApply", d.buttons.autoApply),
++            focusModeWhenSmall: readBool(objects, "buttons", "focusModeWhenSmall", d.buttons.focusModeWhenSmall)
+         },
+         localization: {
+             language: readEnum(objects, "localization", "language", ["fa", "en"] as const, d.localization.language)
+@@ -203,8 +204,9 @@ export function buildFormattingModel(s: VisualSettings): FormattingModel {
+                 toggle("buttons", "showApply", "Show Apply (اعمال)", s.buttons.showApply),
+                 toggle("buttons", "showClear", "Show Clear (پاک کردن)", s.buttons.showClear),
+                 toggle("buttons", "showToday", "Show Today (امروز)", s.buttons.showToday),
+-                toggle("buttons", "showCancel", "Show Cancel (لغو)", s.buttons.showCancel),
+-                toggle("buttons", "autoApply", "Auto Apply (اعمال خودکار)", s.buttons.autoApply)
++                toggle("buttons", "showCancel", "Show Cancel (انصراف)", s.buttons.showCancel),
++                toggle("buttons", "autoApply", "Auto Apply (اعمال خودکار)", s.buttons.autoApply),
++                toggle("buttons", "focusModeWhenSmall", "Open in focus mode when visual is small", s.buttons.focusModeWhenSmall)
+             ]),
+             card("localization", "Localization", [
+                 dropdown("localization", "language", "Language", s.localization.language)
+diff --git a/src/i18n.ts b/src/i18n.ts
+index 7fce0bf..d0f2038 100644
+--- a/src/i18n.ts
++++ b/src/i18n.ts
+@@ -28,6 +28,9 @@ export interface UiStrings {
+     msgFilterUnsupported: string;
+     msgFilterFailed: string;
+     msgExternalFilter: string;
++    placeholder: string;
++    openEmpty: string;
++    openWithRange: (from: string, to: string) => string;
+     persianDigits: boolean;
+ }
+ 
+@@ -51,7 +54,7 @@ export const STRINGS: Record<UiLanguage, UiStrings> = {
+         today: "امروز",
+         clear: "پاک کردن",
+         apply: "اعمال",
+-        cancel: "لغو",
++        cancel: "انصراف",
+         selectDay: (label) => `انتخاب ${label}`,
+         pending: "اعمال‌نشده",
+         appliedLabel: (from, to) => `بازه اعمال‌شده: ${from} تا ${to}`,
+@@ -63,6 +66,9 @@ export const STRINGS: Record<UiLanguage, UiStrings> = {
+         msgFilterUnsupported: "این نسخه از Power BI از فیلتر ویژوال پشتیبانی نمی‌کند.",
+         msgFilterFailed: "اعمال فیلتر ناموفق بود.",
+         msgExternalFilter: "فیلتر موجود روی ستون تاریخ قابل نمایش نیست.",
++        placeholder: "انتخاب بازه تاریخ",
++        openEmpty: "انتخاب بازه تاریخ، باز کردن تقویم",
++        openWithRange: (from, to) => `بازه اعمال‌شده ${from} تا ${to}، باز کردن تقویم برای تغییر`,
+         persianDigits: true
+     },
+     en: {
+@@ -94,6 +100,9 @@ export const STRINGS: Record<UiLanguage, UiStrings> = {
+         msgFilterUnsupported: "This Power BI host does not support visual filters.",
+         msgFilterFailed: "Applying the filter failed.",
+         msgExternalFilter: "The existing filter on the date column cannot be displayed.",
++        placeholder: "Select date range",
++        openEmpty: "Select date range, open calendar",
++        openWithRange: (from, to) => `Applied range ${from} to ${to}, open calendar to change`,
+         persianDigits: false
+     }
+ };
+diff --git a/src/visual.ts b/src/visual.ts
+index ce9bbdf..35d6696 100644
+--- a/src/visual.ts
++++ b/src/visual.ts
+@@ -27,6 +27,11 @@ import DataViewCategoryColumn = powerbi.DataViewCategoryColumn;
+ const MAX_FETCH_ROUNDS = 20;
+ /** How long we trust our own just-issued filter over a lagging jsonFilters payload. */
+ const ISSUE_GRACE_MS = 4000;
++/** Below this viewport the expanded calendar is cramped; optionally use Power BI focus mode. */
++/** Per-instance DOM id suffix (several pickers can share a page). */
++let panelCounter = 0;
++const MIN_OPEN_WIDTH = 240;
++const MIN_OPEN_HEIGHT = 190;
+ 
+ type MessageKind = "info" | "error";
+ 
+@@ -55,6 +60,8 @@ interface Elements {
+     message: HTMLDivElement;
+     empty: HTMLDivElement;
+     body: HTMLDivElement;
++    summary: HTMLButtonElement;
++    summaryText: HTMLSpanElement;
+ }
+ 
+ export class Visual implements IVisual {
+@@ -83,6 +90,12 @@ export class Visual implements IVisual {
+     private lastIssued: { range: CompleteRange | null; at: number } | null = null;
+     private fetchRounds = 0;
+     private interactive = true;
++    /** Collapsed (range summary only) vs expanded (calendar). */
++    private isOpen = false;
++    private viewport: powerbi.IViewport = { width: 0, height: 0 };
++    /** True while WE put the visual into Power BI focus mode to make room for the calendar. */
++    private openedFocusMode = false;
++    private sawFocus = false;
+ 
+     // `options` is typed optional only because the pbiviz-generated plugin wrapper
+     // passes `VisualConstructorOptions | undefined`; Power BI always provides it.
+@@ -112,6 +125,8 @@ export class Visual implements IVisual {
+             // Hosts that disallow interaction (e.g. some read-only containers) get a display-only picker.
+             this.interactive = this.host.hostCapabilities?.allowInteractions !== false;
+             this.strings = STRINGS[this.settings.localization.language] ?? STRINGS.fa;
++            this.viewport = options.viewport;
++            this.trackFocusMode(options.isInFocus);
+ 
+             if (!dv || dv !== this.lastDataView) {
+                 this.ingestData(dv, options);
+@@ -265,7 +280,7 @@ export class Visual implements IVisual {
+             return;
+         }
+         if (completeRangesEqual(range, this.applied)) {
+-            this.render(); // already applied: do not send a duplicate filter
++            this.close(); // already applied: do not send a duplicate filter, just collapse
+             return;
+         }
+         if (typeof this.host.applyJsonFilter !== "function") {
+@@ -281,8 +296,10 @@ export class Visual implements IVisual {
+             this.clearMessage();
+         } catch {
+             this.setMessage(this.strings.msgFilterFailed, "error");
++            this.render(); // stay open so the user sees the error
++            return;
+         }
+-        this.render();
++        this.close();
+     }
+ 
+     private doClear(): void {
+@@ -304,9 +321,14 @@ export class Visual implements IVisual {
+             }
+         }
+         this.applied = null;
+-        this.render();
++        if (this.message) {
++            this.render(); // keep the calendar open to show the failure
++            return;
++        }
++        this.close();
+     }
+ 
++    /** Cancel / Escape: discard the temporary selection, collapse, never touch the Power BI filter. */
+     private doCancel(): void {
+         this.temp = this.appliedAsRange();
+         this.hoverDay = null;
+@@ -314,7 +336,83 @@ export class Visual implements IVisual {
+         if (this.applied) {
+             this.navigateToDay(this.applied.start);
+         }
++        this.close();
++    }
++
++    /** Collapsed -> expanded. The calendar starts from the currently applied range. */
++    private open(): void {
++        if (!this.interactive || this.isOpen) {
++            return;
++        }
++        this.temp = this.appliedAsRange();
++        this.hoverDay = null;
++        this.clearMessage();
++        const anchor = this.applied?.start ?? todayDayNumber();
++        this.navigateToDay(anchor);
++        this.focusDay = this.applied?.start ?? null;
++        this.isOpen = true;
++        this.enterFocusModeIfCramped();
++        this.render();
++        const target = this.el.cells.find((c) => c.tabIndex === 0 && !c.disabled);
++        target?.focus();
++    }
++
++    /** Expanded -> collapsed. Shows the applied range only. */
++    private close(): void {
++        const wasOpen = this.isOpen;
++        this.isOpen = false;
++        this.hoverDay = null;
++        this.temp = this.appliedAsRange();
++        this.leaveFocusMode();
+         this.render();
++        if (wasOpen && this.root.contains(document.activeElement)) {
++            this.el.summary.focus();
++        }
++    }
++
++    private enterFocusModeIfCramped(): void {
++        const cramped = this.viewport.width < MIN_OPEN_WIDTH || this.viewport.height < MIN_OPEN_HEIGHT;
++        if (!cramped || !this.settings.buttons.focusModeWhenSmall || typeof this.host.switchFocusModeState !== "function") {
++            return;
++        }
++        try {
++            this.host.switchFocusModeState(true);
++            this.openedFocusMode = true;
++            this.sawFocus = false;
++        } catch {
++            this.openedFocusMode = false; // host without focus mode: calendar opens inside the small frame (scrollable)
++        }
++    }
++
++    private leaveFocusMode(): void {
++        if (!this.openedFocusMode) {
++            return;
++        }
++        this.openedFocusMode = false;
++        this.sawFocus = false;
++        try {
++            this.host.switchFocusModeState(false);
++        } catch {
++            // ignore
++        }
++    }
++
++    /** If the user leaves the focus mode we opened (host "Back to report"), treat it as Cancel. */
++    private trackFocusMode(isInFocus: boolean | undefined): void {
++        if (!this.openedFocusMode) {
++            return;
++        }
++        if (isInFocus === true) {
++            this.sawFocus = true;
++        } else if (isInFocus === false && this.sawFocus) {
++            this.openedFocusMode = false;
++            this.sawFocus = false;
++            if (this.isOpen) {
++                this.isOpen = false;
++                this.temp = this.appliedAsRange();
++                this.hoverDay = null;
++            }
++        }
+     }
+ 
+     private doToday(): void {
+@@ -374,8 +472,19 @@ export class Visual implements IVisual {
+         this.root.setAttribute("dir", t.dir);
+         this.root.setAttribute("lang", s.localization.language);
+ 
++        // Collapsed <-> expanded
++        this.root.classList.toggle("pjdp--collapsed", !this.isOpen);
++        this.el.summary.hidden = this.isOpen;
++        this.el.body.hidden = !this.isOpen;
++        this.el.summary.setAttribute("aria-expanded", this.isOpen ? "true" : "false");
++        this.renderSummary();
++        if (!this.isOpen) {
++            return; // nothing else is visible; skip calendar work
++        }
++
+         // Header
+         this.el.header.textContent = s.header.text.trim() || t.title;
++        this.el.body.setAttribute("aria-label", this.el.header.textContent);
+ 
+         // Selected values
+         const n = normalizeRange(this.temp);
+@@ -421,9 +530,11 @@ export class Visual implements IVisual {
+         this.el.clear.hidden = !s.buttons.showClear;
+         this.el.cancel.hidden = !s.buttons.showCancel;
+         this.el.apply.hidden = !s.buttons.showApply;
+-        this.el.apply.disabled = !this.interactive || n.start === null || !dirty;
++        // In the collapsed/expanded design Apply also means "confirm and close"; an unchanged
++        // range just closes without sending a duplicate filter (see doApply).
++        this.el.apply.disabled = !this.interactive || n.start === null;
+         this.el.apply.classList.toggle("pjdp-btn--pending", dirty && n.start !== null);
+-        this.el.cancel.disabled = !dirty;
++        this.el.cancel.disabled = false; // always closes the calendar
+         this.el.clear.disabled = !this.interactive || n.start === null && this.applied === null
+             && !(this.target !== null && hasFilterOnTarget(this.jsonFilters, this.target));
+ 
+@@ -434,6 +545,27 @@ export class Visual implements IVisual {
+         this.renderCells();
+     }
+ 
++    private renderSummary(): void {
++        const t = this.strings;
++        const rtl = t.dir === "rtl";
++        let text: string;
++        if (this.applied) {
++            const from = this.fmt(this.model.toJalali(this.applied.start));
++            const to = this.fmt(this.model.toJalali(this.applied.end));
++            // In RTL the start date is on the right, so the arrow points left toward the end date.
++            text = this.applied.start === this.applied.end ? from : `${from}  ${rtl ? "←" : "→"}  ${to}`;
++            this.el.summary.classList.remove("pjdp-summary--empty");
++            this.el.summary.setAttribute("aria-label", t.openWithRange(from, to));
++        } else {
++            text = t.placeholder;
++            this.el.summary.classList.add("pjdp-summary--empty");
++            this.el.summary.setAttribute("aria-label", t.openEmpty);
++        }
++        this.el.summaryText.textContent = text;
++        this.el.summary.title = this.message?.text ?? "";
++        this.el.summary.disabled = !this.interactive;
++    }
++
+     private renderCells(): void {
+         this.monthView = this.model.monthView(this.view.year, this.view.month);
+         const cells = this.monthView.cells;
+@@ -504,13 +636,15 @@ export class Visual implements IVisual {
+ 
+     private showEmpty(text: string): void {
+         this.el.body.hidden = true;
++        this.el.summary.hidden = true;
++        this.root.classList.remove("pjdp--collapsed");
+         this.el.empty.hidden = false;
+         this.el.empty.textContent = text;
+         this.root.setAttribute("dir", this.strings.dir);
+     }
+ 
+     private hideEmpty(): void {
+-        this.el.body.hidden = false;
++        // body/summary visibility is decided by render() from isOpen
+         this.el.empty.hidden = true;
+     }
+ 
+@@ -569,6 +703,12 @@ export class Visual implements IVisual {
+         r.setProperty("--pjdp-cell-h", `${cellH}px`);
+         r.setProperty("--pjdp-cal-font", `${calFont}px`);
+         r.setProperty("--pjdp-footer-h", `${footerH}px`);
++
++        // Collapsed summary: one compact control, sized to fit the frame without horizontal overflow.
++        const sumFont = Math.max(9, Math.min(s.dateDisplay.fontSize, Math.floor(H * 0.45), Math.floor((W - 44) / 13)));
++        const sumH = Math.max(Math.min(H, 24), Math.min(H, Math.ceil(sumFont * 2.5)));
++        r.setProperty("--pjdp-summary-font", `${sumFont}px`);
++        r.setProperty("--pjdp-summary-h", `${sumH}px`);
+         this.root.classList.toggle("pjdp--compact", compact);
+         this.root.classList.toggle("pjdp--wide-cells", cellW >= (this.settings.localization.language === "fa" ? 64 : 76));
+         this.el.header.hidden = !showTitle;
+@@ -592,7 +732,17 @@ export class Visual implements IVisual {
+ 
+         const empty = mk("div", "pjdp-empty", this.root);
+         empty.setAttribute("role", "status");
++
++        const summary = btn("pjdp-summary", this.root);
++        summary.setAttribute("aria-haspopup", "dialog");
++        summary.setAttribute("aria-controls", `pjdp-panel-${++panelCounter}`);
++        summary.appendChild(calendarIcon());
++        const summaryText = mk("span", "pjdp-summary-text", summary);
++
+         const body = mk("div", "pjdp-body", this.root);
++        body.id = summary.getAttribute("aria-controls") ?? "";
++        body.setAttribute("role", "dialog");
++        body.hidden = true;
+ 
+         const header = mk("div", "pjdp-title", body);
+         header.setAttribute("role", "heading");
+@@ -645,7 +795,7 @@ export class Visual implements IVisual {
+         return {
+             header, display, fromBox, fromLabel, fromValue, toBox, toLabel, toValue, pending,
+             prevYear, prevMonth, monthLabel, nextMonth, nextYear, weekdays, grid, cells,
+-            today, clear, cancel, apply, message, empty, body
++            today, clear, cancel, apply, message, empty, body, summary, summaryText
+         };
+     }
+ 
+@@ -666,6 +816,7 @@ export class Visual implements IVisual {
+         this.el.clear.addEventListener("click", guard(() => this.doClear()));
+         this.el.cancel.addEventListener("click", guard(() => this.doCancel()));
+         this.el.apply.addEventListener("click", guard(() => this.doApply()));
++        this.el.summary.addEventListener("click", guard(() => this.open()));
+ 
+         this.el.grid.addEventListener("click", (ev) => guard(() => {
+             const day = this.dayFromEvent(ev);
+@@ -696,7 +847,7 @@ export class Visual implements IVisual {
+         this.el.grid.addEventListener("keydown", (ev) => guard(() => this.onGridKey(ev))());
+ 
+         this.root.addEventListener("keydown", (ev) => {
+-            if (ev.key === "Escape" && this.isDirty()) {
++            if (ev.key === "Escape" && this.isOpen) {
+                 ev.preventDefault();
+                 ev.stopPropagation();
+                 guard(() => this.doCancel())();
+@@ -777,3 +928,27 @@ function toRgba(color: string, alpha: number): string {
+     }
+     return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${a})`;
+ }
++
++/** Small calendar glyph built with DOM APIs (no innerHTML, no external assets). */
++function calendarIcon(): SVGSVGElement {
++    const NS = "http://www.w3.org/2000/svg";
++    const svg = document.createElementNS(NS, "svg");
++    svg.setAttribute("viewBox", "0 0 16 16");
++    svg.setAttribute("aria-hidden", "true");
++    svg.setAttribute("class", "pjdp-summary-icon");
++    const parts: [string, Record<string, string>][] = [
++        ["rect", { x: "1.5", y: "2.5", width: "13", height: "12", rx: "2", fill: "none", stroke: "currentColor", "stroke-width": "1.3" }],
++        ["path", { d: "M1.5 6.2h13", stroke: "currentColor", "stroke-width": "1.3" }],
++        ["path", { d: "M5 1v3M11 1v3", stroke: "currentColor", "stroke-width": "1.3", "stroke-linecap": "round" }],
++        ["rect", { x: "4", y: "8.5", width: "2.4", height: "2.2", rx: ".4", fill: "currentColor" }],
++        ["rect", { x: "9.6", y: "8.5", width: "2.4", height: "2.2", rx: ".4", fill: "currentColor", opacity: ".45" }]
++    ];
++    for (const [tag, attrs] of parts) {
++        const el = document.createElementNS(NS, tag);
++        for (const [k, v] of Object.entries(attrs)) {
++            el.setAttribute(k, v);
++        }
++        svg.appendChild(el);
++    }
++    return svg;
++}
+diff --git a/style/visual.less b/style/visual.less
+index 4dc6bdd..f191c66 100644
+--- a/style/visual.less
++++ b/style/visual.less
+@@ -320,3 +320,53 @@
+     .pjdp-btn--primary { background: var(--pjdp-accent); color: var(--pjdp-bg); }
+     .pjdp-btn, .pjdp-nav-btn { border-color: var(--pjdp-fg); }
+ }
++
++/* ---------- collapsed: range summary only ---------- */
++.pjdp--collapsed {
++    background: transparent;
++    border: 0;
++    padding: 0;
++    overflow: hidden;
++}
++.pjdp-summary {
++    display: flex;
++    align-items: center;
++    gap: .55em;
++    width: 100%;
++    height: var(--pjdp-summary-h, 36px);
++    flex: 0 0 auto;
++    padding: 0 .9em;
++    background: var(--pjdp-bg, #fff);
++    border: var(--pjdp-border, 1px solid @line);
++    border-radius: var(--pjdp-radius, 8px);
++    font-size: var(--pjdp-summary-font, 14px);
++    font-weight: 700;
++    text-align: start;
++    color: @ink;
++
++    &:hover:not(:disabled) {
++        border-color: var(--pjdp-accent, #0E7C7B);
++        box-shadow: inset 0 0 0 1px var(--pjdp-accent, #0E7C7B);
++    }
++    &:active:not(:disabled) { background: var(--pjdp-accent-faint, rgba(14, 124, 123, .07)); }
++}
++.pjdp-summary-icon {
++    flex: 0 0 auto;
++    width: 1.15em;
++    height: 1.15em;
++    color: var(--pjdp-accent, #0E7C7B);
++}
++.pjdp-summary-text {
++    flex: 1 1 auto;
++    min-width: 0;
++    white-space: pre;            /* keep the double spaces around the arrow */
++    overflow: hidden;
++    text-overflow: ellipsis;
++    font-variant-numeric: tabular-nums;
++}
++.pjdp-summary--empty .pjdp-summary-text {
++    font-weight: 400;
++    color: @muted;
++}
++.pjdp--hc .pjdp-summary { color: var(--pjdp-fg); border: 1px solid var(--pjdp-fg); }
++.pjdp--hc .pjdp-summary--empty .pjdp-summary-text { color: var(--pjdp-fg); }
