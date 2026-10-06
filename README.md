@@ -177,6 +177,43 @@ overlap the temporary selected range are tinted.
 Navigating between views **never** changes the Power BI filter. Only **اعمال** does, exactly as before.
 **امروز** returns to Day View. Reopening the calendar always starts in Day View.
 
+## Syncing several copies of the picker (Sync slicers)
+
+Power BI's filter state on `Dates_Dim[MDate]` is the single source of truth. Copies of this visual never talk to
+each other: no `window` globals, `localStorage`, `sessionStorage`, `BroadcastChannel` or `postMessage`.
+
+```
+Picker A ──applyJsonFilter──►  Power BI filter state (Dates_Dim[MDate])  ──update(jsonFilters)──► Picker B
+Picker B ──applyJsonFilter──►              (one shared filter)            ──update(jsonFilters)──► Picker A
+```
+
+The visual declares `"supportsSynchronizingFilterState": true`, which makes it eligible for Power BI's built-in
+**Sync slicers** feature. To use it:
+
+1. Put the picker on each page (copy/paste keeps the same field binding: `Dates_Dim[MDate]`).
+2. **View → Sync slicers**. Select one picker and tick **Sync** (and **Visible**) for the pages that should share it.
+   Copies pasted onto other pages are usually offered to join the group automatically.
+3. For two copies on the **same page**, or for an explicit group, use **Advanced options → group name** in the
+   Sync slicers pane and give the copies the same group name.
+
+Behaviour, all handled through `update({ jsonFilters })`:
+
+- An **Apply** or **Clear** in any copy updates the shared filter. Every copy then shows the new range, or returns
+  to **انتخاب بازه تاریخ** when there is no filter.
+- A copy that is open with an **un-applied (temporary) selection** keeps it. Only its *applied* state (and the
+  small applied-range markers) follows the new filter. **انصراف** then returns it to the current shared filter.
+- An open copy without edits follows changes live.
+- A copy loaded later (page navigation) shows the current filter.
+- Receiving a filter never calls `applyJsonFilter`, so there are no loops or ping-pong.
+- Right after a copy's own Apply/Clear, only a *lagging re-send of the previous filter* is ignored, for up to
+  4 seconds. Any other incoming filter state, such as a change made in another copy, is accepted immediately.
+
+**What the Visual API does *not* allow:** a custom visual only receives **its own** filter (`jsonFilters`). Filters on
+`Dates_Dim[MDate]` set by **other kinds of visuals** (for example a built-in slicer) or by **page/report filters in the
+Filters pane** are never handed to the visual as filter definitions. They only reduce the dates in its data. So the
+picker cannot display those ranges as its own selection. Use copies of this picker in a Sync slicers group to share
+one date range.
+
 ## Usage
 
 | Action | How |
@@ -324,6 +361,7 @@ because the API types `jsonFilters` as an opaque `powerbi.IFilter`.
 | `pbiviz package` | Pass. The `.pbiviz` was produced. |
 | Unit tests (`npm test`) | 31/31, run under the UTC, Asia/Tehran, America/Los_Angeles and Pacific/Kiritimati time zones |
 | Browser harness: the **packaged** bundle in headless Chromium 141 with a **mock** host | 144/144 (96 earlier regression checks unchanged + 48 drill-down checks covering acceptance scenarios 1–13), run under the Asia/Tehran, UTC and Asia/Dubai time zones. Includes your acceptance tests T1–T5 for the collapsed/expanded behaviour, focus-mode simulation and collapsed layout from 180×32 to 600×400. |
+| Sync harness: several packaged instances coordinated only through a mock Power BI filter store (`tests/harness/run_sync_harness.py`) | 39/39, run under the Asia/Tehran, UTC and Asia/Dubai time zones |
 | Bundle audit | No fetch/XHR/WebSocket/beacon, no console logging, no SQL/server strings, `privileges: []` |
 
 The harness is **not** Power BI. It verifies the visual's own behavior and the exact filter payloads it passes to
@@ -342,6 +380,7 @@ in the build environment:
 - Collapsed/expanded behaviour (v1.1) inside Power BI Desktop / PBIRS — **NOT TESTED IN POWER BI DESKTOP/PBIRS**
 - Focus mode (`switchFocusModeState`) on Desktop for Report Server and PBIRS — **NOT TESTED**
 - Drill-down/up navigation inside Power BI Desktop / PBIRS — **NOT TESTED IN POWER BI DESKTOP/PBIRS**
+- Sync slicers with this custom visual (across pages, and same-page group names) in Desktop for Report Server and PBIRS — **NOT TESTED IN POWER BI DESKTOP/PBIRS**
 
 ## Known limitations
 
@@ -355,6 +394,12 @@ in the build environment:
 - If the table name contains a `.`, target resolution would split it incorrectly. `Dates_Dim` is not affected.
 
 ## Changelog
+
+**Unreleased — sync between copies**
+- `capabilities.json`: `"supportsSynchronizingFilterState": true`, so the picker can join Power BI Sync slicers groups.
+- `visual.ts`: the 4-second guard after the visual's own Apply/Clear now ignores only a lagging re-send of the
+  *previous* filter. It used to ignore every incoming filter, which could leave a copy stale when another copy
+  changed the range within 4 s.
 
 **Unreleased (after 1.1.0.0) — drill-down/up**
 - Added Day → Month → Year drill-down/up navigation. Everything else is unchanged.

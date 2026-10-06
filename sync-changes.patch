@@ -1,0 +1,346 @@
+diff --git a/README.md b/README.md
+index c64c3f4..fe67d6e 100644
+--- a/README.md
++++ b/README.md
+@@ -177,6 +177,43 @@ overlap the temporary selected range are tinted.
+ Navigating between views **never** changes the Power BI filter. Only **اعمال** does, exactly as before.
+ **امروز** returns to Day View. Reopening the calendar always starts in Day View.
+ 
++## Syncing several copies of the picker (Sync slicers)
++
++Power BI's filter state on `Dates_Dim[MDate]` is the single source of truth. Copies of this visual never talk to
++each other: no `window` globals, `localStorage`, `sessionStorage`, `BroadcastChannel` or `postMessage`.
++
++```
++Picker A ──applyJsonFilter──►  Power BI filter state (Dates_Dim[MDate])  ──update(jsonFilters)──► Picker B
++Picker B ──applyJsonFilter──►              (one shared filter)            ──update(jsonFilters)──► Picker A
++```
++
++The visual declares `"supportsSynchronizingFilterState": true`, which makes it eligible for Power BI's built-in
++**Sync slicers** feature. To use it:
++
++1. Put the picker on each page (copy/paste keeps the same field binding: `Dates_Dim[MDate]`).
++2. **View → Sync slicers**. Select one picker and tick **Sync** (and **Visible**) for the pages that should share it.
++   Copies pasted onto other pages are usually offered to join the group automatically.
++3. For two copies on the **same page**, or for an explicit group, use **Advanced options → group name** in the
++   Sync slicers pane and give the copies the same group name.
++
++Behaviour, all handled through `update({ jsonFilters })`:
++
++- An **Apply** or **Clear** in any copy updates the shared filter. Every copy then shows the new range, or returns
++  to **انتخاب بازه تاریخ** when there is no filter.
++- A copy that is open with an **un-applied (temporary) selection** keeps it. Only its *applied* state (and the
++  small applied-range markers) follows the new filter. **انصراف** then returns it to the current shared filter.
++- An open copy without edits follows changes live.
++- A copy loaded later (page navigation) shows the current filter.
++- Receiving a filter never calls `applyJsonFilter`, so there are no loops or ping-pong.
++- Right after a copy's own Apply/Clear, only a *lagging re-send of the previous filter* is ignored, for up to
++  4 seconds. Any other incoming filter state, such as a change made in another copy, is accepted immediately.
++
++**What the Visual API does *not* allow:** a custom visual only receives **its own** filter (`jsonFilters`). Filters on
++`Dates_Dim[MDate]` set by **other kinds of visuals** (for example a built-in slicer) or by **page/report filters in the
++Filters pane** are never handed to the visual as filter definitions. They only reduce the dates in its data. So the
++picker cannot display those ranges as its own selection. Use copies of this picker in a Sync slicers group to share
++one date range.
++
+ ## Usage
+ 
+ | Action | How |
+@@ -324,6 +361,7 @@ because the API types `jsonFilters` as an opaque `powerbi.IFilter`.
+ | `pbiviz package` | Pass. The `.pbiviz` was produced. |
+ | Unit tests (`npm test`) | 31/31, run under the UTC, Asia/Tehran, America/Los_Angeles and Pacific/Kiritimati time zones |
+ | Browser harness: the **packaged** bundle in headless Chromium 141 with a **mock** host | 144/144 (96 earlier regression checks unchanged + 48 drill-down checks covering acceptance scenarios 1–13), run under the Asia/Tehran, UTC and Asia/Dubai time zones. Includes your acceptance tests T1–T5 for the collapsed/expanded behaviour, focus-mode simulation and collapsed layout from 180×32 to 600×400. |
++| Sync harness: several packaged instances coordinated only through a mock Power BI filter store (`tests/harness/run_sync_harness.py`) | 39/39, run under the Asia/Tehran, UTC and Asia/Dubai time zones |
+ | Bundle audit | No fetch/XHR/WebSocket/beacon, no console logging, no SQL/server strings, `privileges: []` |
+ 
+ The harness is **not** Power BI. It verifies the visual's own behavior and the exact filter payloads it passes to
+@@ -342,6 +380,7 @@ in the build environment:
+ - Collapsed/expanded behaviour (v1.1) inside Power BI Desktop / PBIRS — **NOT TESTED IN POWER BI DESKTOP/PBIRS**
+ - Focus mode (`switchFocusModeState`) on Desktop for Report Server and PBIRS — **NOT TESTED**
+ - Drill-down/up navigation inside Power BI Desktop / PBIRS — **NOT TESTED IN POWER BI DESKTOP/PBIRS**
++- Sync slicers with this custom visual (across pages, and same-page group names) in Desktop for Report Server and PBIRS — **NOT TESTED IN POWER BI DESKTOP/PBIRS**
+ 
+ ## Known limitations
+ 
+@@ -356,6 +395,12 @@ in the build environment:
+ 
+ ## Changelog
+ 
++**Unreleased — sync between copies**
++- `capabilities.json`: `"supportsSynchronizingFilterState": true`, so the picker can join Power BI Sync slicers groups.
++- `visual.ts`: the 4-second guard after the visual's own Apply/Clear now ignores only a lagging re-send of the
++  *previous* filter. It used to ignore every incoming filter, which could leave a copy stale when another copy
++  changed the range within 4 s.
++
+ **Unreleased (after 1.1.0.0) — drill-down/up**
+ - Added Day → Month → Year drill-down/up navigation. Everything else is unchanged.
+ - `pbiviz.json` version was intentionally **not** bumped (out of scope). Bump it before redistributing, or
+diff --git a/capabilities.json b/capabilities.json
+index 2267a4a..4134585 100644
+--- a/capabilities.json
++++ b/capabilities.json
+@@ -105,6 +105,7 @@
+         }
+     },
+     "supportsKeyboardFocus": true,
++    "supportsSynchronizingFilterState": true,
+     "supportsHighlight": false,
+     "supportsMultiVisualSelection": false,
+     "suppressDefaultTitle": false,
+diff --git a/src/visual.ts b/src/visual.ts
+index bac9f09..c378c85 100644
+--- a/src/visual.ts
++++ b/src/visual.ts
+@@ -98,7 +98,8 @@ export class Visual implements IVisual {
+     private focusDay: number | null = null;
+     private hoverDay: number | null = null;
+     private message: { text: string; kind: MessageKind } | null = null;
+-    private lastIssued: { range: CompleteRange | null; at: number } | null = null;
++    /** Our last own filter change: `before` is what was applied before it (used to recognise host lag). */
++    private lastIssued: { range: CompleteRange | null; before: CompleteRange | null; at: number } | null = null;
+     private fetchRounds = 0;
+     private interactive = true;
+     /** Collapsed (range summary only) vs expanded (calendar). */
+@@ -236,10 +237,12 @@ export class Visual implements IVisual {
+         const now = Date.now();
+ 
+         if (this.lastIssued && now - this.lastIssued.at < ISSUE_GRACE_MS) {
+-            if (completeRangesEqual(parsed, this.lastIssued.range)) {
+-                this.lastIssued = null; // host caught up
++            if (completeRangesEqual(parsed, this.lastIssued.before)
++                && !completeRangesEqual(parsed, this.lastIssued.range)) {
++                return; // host still shows the pre-change filter (lag): keep our own new state
+             }
+-            return; // host has not reflected our own change yet; keep our state
++            // Either the host caught up with our change, or ANOTHER source (e.g. a synced copy of this
++            // visual) changed the filter meanwhile: in both cases Power BI's filter state wins below.
+         }
+         this.lastIssued = null;
+ 
+@@ -308,8 +311,8 @@ export class Visual implements IVisual {
+         try {
+             const filter = buildRangeFilter(this.target, range, this.settings.advanced.filterDateEncoding);
+             this.host.applyJsonFilter(filter, "general", "filter", powerbi.FilterAction.merge);
++            this.lastIssued = { range, before: this.applied, at: Date.now() };
+             this.applied = range;
+-            this.lastIssued = { range, at: Date.now() };
+             this.clearMessage();
+         } catch {
+             this.setMessage(this.strings.msgFilterFailed, "error");
+@@ -332,7 +335,7 @@ export class Visual implements IVisual {
+             try {
+                 // Removes ONLY this visual's own filter (general.filter); page/report/other filters are untouched.
+                 this.host.applyJsonFilter(null as unknown as IFilter, "general", "filter", powerbi.FilterAction.remove);
+-                this.lastIssued = { range: null, at: Date.now() };
++                this.lastIssued = { range: null, before: this.applied, at: Date.now() };
+             } catch {
+                 this.setMessage(this.strings.msgFilterFailed, "error");
+             }
+diff --git a/tests/harness/run_sync_harness.py b/tests/harness/run_sync_harness.py
+new file mode 100644
+index 0000000..e9e47f0
+--- /dev/null
++++ b/tests/harness/run_sync_harness.py
+@@ -0,0 +1,145 @@
++"""
++Multi-instance sync harness: two or more copies of the PACKAGED visual in one page,
++coordinated ONLY through a mock Power BI filter store (sync-mock.js), as Sync slicers do.
++NOT Power BI.  Run:  python3 tests/harness/run_sync_harness.py
++"""
++import json, os, sys, zipfile, datetime, re
++from playwright.sync_api import sync_playwright
++
++ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++with zipfile.ZipFile(os.path.join(ROOT, "dist", "PersianJalaliDateRangePicker.pbiviz")) as z:
++    res = json.loads(z.read([n for n in z.namelist() if n.startswith("resources/") and n.endswith(".json")][0]))
++JS, CSS, CAPS = res["content"]["js"], res["content"]["css"], res["capabilities"]
++MOCK = open(os.path.join(os.path.dirname(__file__), "sync-mock.js"), encoding="utf-8").read()
++TZ = os.environ.get("HARNESS_TZ", "Asia/Tehran")
++ARROW = "←"
++results = []
++def check(name, cond, detail=""):
++    results.append((name, bool(cond))); print(("PASS " if cond else "FAIL ") + name + (f"  [{detail}]" if detail and not cond else ""))
++
++check("capabilities: supportsSynchronizingFilterState = true", CAPS.get("supportsSynchronizingFilterState") is True)
++for api in ["localStorage", "sessionStorage", "BroadcastChannel", "postMessage", "SharedWorker", "indexedDB", "document.cookie"]:
++    check(f"bundle does not use {api}", api not in JS)
++
++HTML = f"""<!doctype html><html><head><meta charset="utf-8"><style>{CSS}</style></head><body>
++<script>window.powerbi={{}};</script><script>{JS}</script><script>{MOCK}</script></body></html>"""
++
++with sync_playwright() as p:
++    b = p.chromium.launch(); ctx = b.new_context(timezone_id=TZ, viewport={"width": 1000, "height": 700}); page = ctx.new_page()
++    errors = []
++    page.on("pageerror", lambda e: errors.append(str(e)))
++    page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
++    page.clock.install(time=datetime.datetime(2026, 10, 5, 6, 30, tzinfo=datetime.timezone.utc))
++    page.set_content(HTML)
++    w = lambda ms=40: page.wait_for_timeout(ms)
++    def ev(js): return page.evaluate(js)
++    summary = lambda v: ev(f"document.querySelector('#{v} .pjdp-summary-text').textContent")
++    fields = lambda v: ev(f"[...document.querySelectorAll('#{v} .pjdp-field-value')].map(e=>e.textContent)")
++    is_open = lambda v: ev(f"!document.querySelector('#{v} .pjdp-body').hidden")
++    calls = lambda v: ev(f"S.members['{v}'].calls.length")
++    updates = lambda v: ev(f"S.members['{v}'].updates")
++    def open_(v): page.click(f"#{v} button.pjdp-summary"); w(20)
++    def day(v, label): page.click(f'#{v} button.pjdp-cell[aria-label="انتخاب {label}"]'); w(10)
++    def btn(v, name): page.click(f'#{v} button.pjdp-btn:text-is("{name}")'); w()
++    def prev(v): page.click(f'#{v} button[aria-label="ماه قبل"]'); w(10)
++    R = lambda a, b: f"{a}  {ARROW}  {b}"
++
++    ev("S.add('v1'); S.add('v2')"); w()
++    check("S0 both instances start neutral", summary("v1") == summary("v2") == "انتخاب بازه تاریخ")
++
++    # S1: apply in v1 -> v2 follows
++    open_("v1"); day("v1", "۱۴۰۵/۰۷/۰۱"); day("v1", "۱۴۰۵/۰۷/۱۵")
++    check("S1 temporary selection in v1 is NOT shared (no filter yet)", calls("v1") == 0 and summary("v2") == "انتخاب بازه تاریخ")
++    btn("v1", "اعمال")
++    check("S1 v1 applied & collapsed", summary("v1") == R("۱۴۰۵/۰۷/۰۱", "۱۴۰۵/۰۷/۱۵"), summary("v1"))
++    check("S1 v2 shows the same range via filter state", summary("v2") == R("۱۴۰۵/۰۷/۰۱", "۱۴۰۵/۰۷/۱۵"), summary("v2"))
++    check("S1 v2 did not call applyJsonFilter (no echo loop)", calls("v2") == 0)
++    open_("v2")
++    check("S1 opening v2 preselects the synced range", fields("v2") == ["۱۴۰۵/۰۷/۰۱", "۱۴۰۵/۰۷/۱۵"], str(fields("v2")))
++
++    # S2: change in v2 -> v1 follows (within the old 4 s window: regression of the fixed bug)
++    day("v2", "۱۴۰۵/۰۷/۲۰"); day("v2", "۱۴۰۵/۰۷/۱۰"); btn("v2", "اعمال")
++    check("S2 v2 applied normalized range", summary("v2") == R("۱۴۰۵/۰۷/۱۰", "۱۴۰۵/۰۷/۲۰"), summary("v2"))
++    check("S2 v1 synced to v2's range immediately (< 4 s after its own Apply)", summary("v1") == R("۱۴۰۵/۰۷/۱۰", "۱۴۰۵/۰۷/۲۰"), summary("v1"))
++    check("S2 exactly one host call per user Apply", calls("v1") == 1 and calls("v2") == 1)
++
++    # S3: temporary state is never overwritten by an external change
++    open_("v2"); day("v2", "۱۴۰۵/۰۷/۰۲"); day("v2", "۱۴۰۵/۰۷/۰۴")       # v2 dirty, not applied
++    open_("v1"); day("v1", "۱۴۰۵/۰۷/۲۵"); day("v1", "۱۴۰۵/۰۷/۲۸"); btn("v1", "اعمال")
++    check("S3 v2's un-applied temporary selection kept", is_open("v2") and fields("v2") == ["۱۴۰۵/۰۷/۰۲", "۱۴۰۵/۰۷/۰۴"], str(fields("v2")))
++    check("S3 v2's applied markers moved to the new external range",
++          ev("[...document.querySelectorAll('#v2 .pjdp-cell--applied')].map(b=>b.textContent).join(',')") == "۲۵,۲۶,۲۷,۲۸")
++    btn("v2", "انصراف")
++    check("S3 cancel in v2 returns to the CURRENT filter state (from v1)", summary("v2") == R("۱۴۰۵/۰۷/۲۵", "۱۴۰۵/۰۷/۲۸"), summary("v2"))
++    check("S3 cancel sent nothing", calls("v2") == 1)
++
++    # S4: open but untouched v2 follows external changes live
++    open_("v2"); open_("v1") if not is_open("v1") else None
++    day("v1", "۱۴۰۵/۰۷/۰۵"); btn("v1", "اعمال")
++    check("S4 untouched open v2 follows live", is_open("v2") and fields("v2") == ["۱۴۰۵/۰۷/۰۵", "۱۴۰۵/۰۷/۰۵"], str(fields("v2")))
++    btn("v2", "انصراف")
++
++    # S5: Clear in one -> other returns to neutral
++    open_("v2"); btn("v2", "پاک کردن")
++    check("S5 clear in v2 -> v2 neutral", summary("v2") == "انتخاب بازه تاریخ")
++    check("S5 clear in v2 -> v1 neutral (no filter on MDate)", summary("v1") == "انتخاب بازه تاریخ", summary("v1"))
++    check("S5 store empty", ev("S.store.filters.length") == 0)
++
++    # S6: external clear while dirty keeps temp; cancel then shows neutral
++    open_("v1"); day("v1", "۱۴۰۵/۰۷/۰۱"); btn("v1", "اعمال")
++    open_("v1"); day("v1", "۱۴۰۵/۰۷/۰۹")
++    open_("v2"); btn("v2", "پاک کردن")
++    check("S6 v1 temp kept after external clear", is_open("v1") and fields("v1")[0] == "۱۴۰۵/۰۷/۰۹", str(fields("v1")))
++    btn("v1", "انصراف")
++    check("S6 v1 cancel -> neutral (filter state has no range)", summary("v1") == "انتخاب بازه تاریخ", summary("v1"))
++
++    # S7: no loops / no runaway updates
++    c1, c2, u1, u2 = calls("v1"), calls("v2"), updates("v1"), updates("v2")
++    w(600)
++    check("S7 idle: no further host calls or updates (no loop)", (calls("v1"), calls("v2"), updates("v1"), updates("v2")) == (c1, c2, u1, u2))
++    ev("S.broadcast(); S.broadcast(); S.broadcast()"); w(50)
++    check("S7 repeated identical filter pushes never trigger applyJsonFilter", (calls("v1"), calls("v2")) == (c1, c2))
++
++    # S8: host lag (old state echoed first) does not make the applier flicker back
++    ev("S.cfg.lagFirstEcho = true; S.cfg.echoDelay = 120")
++    open_("v1"); day("v1", "۱۴۰۵/۰۸/۰۱") if False else None
++    page.click('#v1 button[aria-label="ماه بعد"]'); w(10); day("v1", "۱۴۰۵/۰۸/۰۱"); day("v1", "۱۴۰۵/۰۸/۰۳"); btn("v1", "اعمال")
++    check("S8 lagging old echo ignored by applier", summary("v1") == R("۱۴۰۵/۰۸/۰۱", "۱۴۰۵/۰۸/۰۳"), summary("v1"))
++    w(250)
++    check("S8 after lag both converge on new range", summary("v1") == summary("v2") == R("۱۴۰۵/۰۸/۰۱", "۱۴۰۵/۰۸/۰۳"), f"{summary('v1')} | {summary('v2')}")
++    ev("S.cfg.lagFirstEcho = false; S.cfg.echoDelay = 0")
++
++    # S9: "other page" — instance created later (page navigation) restores from filter state
++    ev("S.remove('v2'); S.add('v3')"); w()
++    check("S9 newly loaded instance (other page) shows current range", summary("v3") == R("۱۴۰۵/۰۸/۰۱", "۱۴۰۵/۰۸/۰۳") and calls("v3") == 0, summary("v3"))
++
++    # S10: three instances, change from the newest
++    ev("S.add('v4')"); w(); open_("v4"); btn("v4", "پاک کردن")
++    check("S10 three-way sync: clear in v4 neutralises v1 and v3", summary("v1") == summary("v3") == "انتخاب بازه تاریخ")
++
++    # S11: instance NOT in a sync group keeps its own state (Power BI decides grouping)
++    ev("S.add('solo', false)"); w(); open_("v1"); day("v1", "۱۴۰۵/۰۷/۰۳"); btn("v1", "اعمال")
++    check("S11 un-synced instance is unaffected", summary("solo") == "انتخاب بازه تاریخ" and summary("v3") == "۱۴۰۵/۰۷/۰۳", f"{summary('solo')} | {summary('v3')}")
++
++    # S12: uninterpretable filter state -> neutral, no crash, no write-back
++    ev("""S.store.filters=[{"$schema":"http://powerbi.com/product/schema#basic","target":{"table":"Dates_Dim","column":"MDate"},"filterType":1,"operator":"In","values":[1]}]; S.broadcast();"""); w()
++    check("S12 unknown filter shape -> neutral, nothing written back", summary("v1") == summary("v3") == "انتخاب بازه تاریخ" and calls("v3") == 0)
++
++    # S13: host that does NOT echo a filter back to the visual that applied it (unverified real-host behaviour).
++    # v1 applies, then v3 changes the range within 4 s: v1 must still follow Power BI's filter state.
++    ev("S.cfg.noSelfEcho = true")
++    open_("v1"); day("v1", "۱۴۰۵/۰۷/۰۱"); day("v1", "۱۴۰۵/۰۷/۰۲"); btn("v1", "اعمال")
++    open_("v3"); day("v3", "۱۴۰۵/۰۷/۰۴"); day("v3", "۱۴۰۵/۰۷/۰۶"); btn("v3", "اعمال")
++    check("S13 no self-echo: v1 follows v3's change made within 4 s", summary("v1") == R("۱۴۰۵/۰۷/۰۴", "۱۴۰۵/۰۷/۰۶"), summary("v1"))
++    open_("v1"); btn("v1", "پاک کردن"); open_("v3"); day("v3", "۱۴۰۵/۰۷/۱۰"); btn("v3", "اعمال")
++    check("S13 no self-echo: v1 follows a change made right after its own Clear", summary("v1") == "۱۴۰۵/۰۷/۱۰", summary("v1"))
++    ev("S.cfg.noSelfEcho = false")
++
++    page.screenshot(path=os.path.join(ROOT, "tests", "harness", "screenshots", "sync_instances.png"))
++    check("no page/console errors", not errors, str(errors[:3]))
++    check("no render failures", ev("Object.values(S.members).every(m=>!m.failed)"))
++    b.close()
++
++failed = [r for r in results if not r[1]]
++print(f"\n{len(results) - len(failed)}/{len(results)} sync checks passed (TZ={TZ})")
++sys.exit(1 if failed else 0)
+diff --git a/tests/harness/sync-mock.js b/tests/harness/sync-mock.js
+new file mode 100644
+index 0000000..64955be
+--- /dev/null
++++ b/tests/harness/sync-mock.js
+@@ -0,0 +1,51 @@
++// Mock of a Power BI *sync slicers* group for harness tests. NOT shipped in the visual.
++// Several visual instances share ONE filter store (Power BI's filter state). Instances never
++// talk to each other: a filter change goes visual -> host store -> update({jsonFilters}) of every member.
++window.S = (() => {
++  const fmt = new Intl.DateTimeFormat("en-US-u-ca-persian-nu-latn", { year: "numeric", month: "2-digit", day: "2-digit" });
++  const jid = d => { const p = Object.fromEntries(fmt.formatToParts(d).map(x => [x.type, x.value])); return `${p.year.replace(/\D/g, "")}/${p.month}/${p.day}`; };
++  const dates = [], ids = [];
++  for (let i = 0; i < 1170; i++) { const d = new Date(2024, 2, 20 + i); dates.push(d); ids.push(jid(d)); }
++  const dv = () => ({ metadata: { columns: [], objects: {} }, categorical: { categories: [
++    { source: { queryName: "Dates_Dim.MDate", displayName: "MDate", roles: { Date: true } }, values: dates },
++    { source: { queryName: "Dates_Dim.Date_ID", displayName: "Date_ID", roles: { JalaliDate: true } }, values: ids } ] } });
++  const store = { filters: [] };                  // Power BI filter state for the sync group
++  const members = {};                              // id -> {visual, el, calls, updates, synced}
++  const cfg = { echoDelay: 0, lagFirstEcho: false, noSelfEcho: false };
++  const dataView = dv();
++  function pushTo(m, filters) {
++    m.updates++;
++    m.visual.update({ viewport: { width: 400, height: 300 }, dataViews: [dataView], type: 2, operationKind: 0,
++      jsonFilters: filters.map(f => structuredClone(f)) });
++  }
++  function broadcast() { for (const id in members) if (members[id].synced) pushTo(members[id], store.filters); }
++  function makeHost(id) {
++    return {
++      applyJsonFilter(f, obj, prop, action) {
++        const m = members[id]; m.calls.push({ f: f && structuredClone(f), action });
++        const next = action === 1 ? [] : [structuredClone(f)];
++        if (!m.synced) { m.own = next; setTimeout(() => pushTo(m, m.own), cfg.echoDelay); return; }
++        if (cfg.lagFirstEcho) {               // host first re-sends the OLD state, then the new one
++          const old = store.filters; setTimeout(() => pushTo(m, old), 0);
++        }
++        // noSelfEcho: host updates the filter state but does not send an update back to the applier.
++        setTimeout(() => { store.filters = next; for (const k in members) if (members[k].synced && !(cfg.noSelfEcho && k === id)) pushTo(members[k], store.filters); }, cfg.echoDelay);
++      },
++      fetchMoreData: () => false,
++      eventService: { renderingStarted() {}, renderingFinished() {}, renderingFailed(o, r) { members[id].failed = r; } },
++      hostCapabilities: { allowInteractions: true },
++      colorPalette: { isHighContrast: false },
++      switchFocusModeState() {}
++    };
++  }
++  function add(id, synced = true) {
++    let el = document.getElementById(id);
++    if (!el) { el = document.createElement("div"); el.id = id; el.style.cssText = "position:relative;width:400px;height:300px;display:inline-block;margin:4px;vertical-align:top"; document.body.appendChild(el); }
++    el.replaceChildren();
++    const visual = window.powerbi.visuals.plugins.PersianJalaliDateRangePickerA7C31F0E9B2D4.create({ element: el, host: makeHost(id) });
++    members[id] = { visual, el, calls: [], updates: 0, synced, own: [] };
++    pushTo(members[id], synced ? store.filters : []);   // page load: host restores current filter state
++  }
++  function remove(id) { members[id].visual.destroy(); delete members[id]; document.getElementById(id).remove(); }
++  return { store, members, cfg, add, remove, broadcast };
++})();
