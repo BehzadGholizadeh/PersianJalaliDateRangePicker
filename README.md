@@ -159,6 +159,24 @@ so collapsing does not shrink the frame. Two ways to lay it out:
    when visual is small*; the calendar then opens inside the small frame, scrollable but cramped.
    **Focus mode on Power BI Report Server is NOT TESTED.** If it doesn't work there, use option 1.
 
+## Drill-down / drill-up navigation (Day → Month → Year)
+
+Inside the open calendar the header label is clickable:
+
+| View | Header | Clicking | ‹ › | Selecting a cell |
+|---|---|---|---|---|
+| **Day** | `مهر ۱۴۰۵` (unchanged look; month and year underline on hover) | month name → Month View, year → Year View | previous/next month (« » previous/next year, as before) | selects days (range logic unchanged) |
+| **Month** | `۱۴۰۵` | year → Year View | previous/next year | month → Day View of that month |
+| **Year** | `۱۴۰۱ – ۱۴۱۲` (12 years, current year in the middle of row 2) | — | previous/next 12 years | year → Month View of that year |
+
+Escape goes one level back (Year → Month → Day). In Day View, Escape keeps its existing behaviour (cancel and
+collapse). Arrow keys move inside the month/year grid (RTL-aware; ↑/↓ = ±3). Moving past the grid edge pages to
+the previous/next year or year page. The current month/year is filled, today's is underlined, and months/years that
+overlap the temporary selected range are tinted.
+
+Navigating between views **never** changes the Power BI filter. Only **اعمال** does, exactly as before.
+**امروز** returns to Day View. Reopening the calendar always starts in Day View.
+
 ## Usage
 
 | Action | How |
@@ -305,7 +323,7 @@ because the API types `jsonFilters` as an opaque `powerbi.IFilter`.
 | ESLint (pbiviz recommended config) | Pass |
 | `pbiviz package` | Pass. The `.pbiviz` was produced. |
 | Unit tests (`npm test`) | 31/31, run under the UTC, Asia/Tehran, America/Los_Angeles and Pacific/Kiritimati time zones |
-| Browser harness: the **packaged** bundle in headless Chromium 141 with a **mock** host | 96/96, run under the Asia/Tehran, UTC and Asia/Dubai time zones. Includes your acceptance tests T1–T5 for the collapsed/expanded behaviour, focus-mode simulation and collapsed layout from 180×32 to 600×400. |
+| Browser harness: the **packaged** bundle in headless Chromium 141 with a **mock** host | 144/144 (96 earlier regression checks unchanged + 48 drill-down checks covering acceptance scenarios 1–13), run under the Asia/Tehran, UTC and Asia/Dubai time zones. Includes your acceptance tests T1–T5 for the collapsed/expanded behaviour, focus-mode simulation and collapsed layout from 180×32 to 600×400. |
 | Bundle audit | No fetch/XHR/WebSocket/beacon, no console logging, no SQL/server strings, `privileges: []` |
 
 The harness is **not** Power BI. It verifies the visual's own behavior and the exact filter payloads it passes to
@@ -323,6 +341,7 @@ in the build environment:
 - Publishing to PBIRS 1.26.9682.1442, and use in Edge/Chrome via PBIRS — **NOT TESTED**
 - Collapsed/expanded behaviour (v1.1) inside Power BI Desktop / PBIRS — **NOT TESTED IN POWER BI DESKTOP/PBIRS**
 - Focus mode (`switchFocusModeState`) on Desktop for Report Server and PBIRS — **NOT TESTED**
+- Drill-down/up navigation inside Power BI Desktop / PBIRS — **NOT TESTED IN POWER BI DESKTOP/PBIRS**
 
 ## Known limitations
 
@@ -336,6 +355,11 @@ in the build environment:
 - If the table name contains a `.`, target resolution would split it incorrectly. `Dates_Dim` is not affected.
 
 ## Changelog
+
+**Unreleased (after 1.1.0.0) — drill-down/up**
+- Added Day → Month → Year drill-down/up navigation. Everything else is unchanged.
+- `pbiviz.json` version was intentionally **not** bumped (out of scope). Bump it before redistributing, or
+  Power BI may keep the already-imported 1.1.0.0 copy in existing reports.
 
 **1.1.0.0**
 - The calendar is no longer always visible. A collapsed range control (or **انتخاب بازه تاریخ**) opens the calendar;
